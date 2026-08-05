@@ -161,24 +161,30 @@ app
     server.use(cookieParser());
     server.use(express.json());
     server.use(express.urlencoded({ extended: true }));
-    server.use((req, _res, next) => {
-      try {
-        const descriptor = Object.getOwnPropertyDescriptor(req, 'ip');
-        if (descriptor?.writable === true) {
-          Object.defineProperty(req, 'ip', {
-            ...descriptor,
-            value: getClientIp(req) ?? '',
+    // Forwarded headers (X-Forwarded-For, X-Real-IP, ...) are set by the client
+    // unless a reverse proxy overwrites them, so we only resolve the client IP
+    // from them when the operator has told us a trusted proxy is in front of us.
+    // Otherwise Express' own req.ip (the socket address) is left untouched.
+    if (settings.network.trustProxy) {
+      server.use((req, _res, next) => {
+        try {
+          const descriptor = Object.getOwnPropertyDescriptor(req, 'ip');
+          if (descriptor?.writable === true) {
+            Object.defineProperty(req, 'ip', {
+              ...descriptor,
+              value: getClientIp(req) ?? '',
+            });
+          }
+        } catch (e) {
+          logger.error('Failed to attach the ip to the request', {
+            label: 'Middleware',
+            message: (e as Error).message,
           });
+        } finally {
+          next();
         }
-      } catch (e) {
-        logger.error('Failed to attach the ip to the request', {
-          label: 'Middleware',
-          message: (e as Error).message,
-        });
-      } finally {
-        next();
-      }
-    });
+      });
+    }
     if (settings.network.csrfProtection) {
       server.use(
         csurf({
