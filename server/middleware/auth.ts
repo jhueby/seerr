@@ -5,12 +5,35 @@ import type {
   PermissionCheckOptions,
 } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
+import { timingSafeEqual } from 'crypto';
+
+/**
+ * Compares a presented API key against the configured one without leaking how
+ * much of it matched through the time the comparison takes.
+ */
+const apiKeyMatches = (presentedKey: string | undefined, apiKey: string) => {
+  if (!presentedKey || !apiKey) {
+    return false;
+  }
+
+  const presented = Buffer.from(presentedKey);
+  const expected = Buffer.from(apiKey);
+
+  // timingSafeEqual throws on a length mismatch, which would itself be a signal,
+  // so compare against a same-length buffer and discard the result.
+  if (presented.length !== expected.length) {
+    timingSafeEqual(expected, expected);
+    return false;
+  }
+
+  return timingSafeEqual(presented, expected);
+};
 
 export const checkUser: Middleware = async (req, _res, next) => {
   const settings = getSettings();
   let user: User | undefined | null;
 
-  if (req.header('X-API-Key') === settings.main.apiKey) {
+  if (apiKeyMatches(req.header('X-API-Key'), settings.main.apiKey)) {
     const userRepository = getRepository(User);
 
     let userId = 1; // Work on original administrator account
