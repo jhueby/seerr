@@ -153,6 +153,12 @@ In a PowerShell window:
 If you can't get a response, then your server can't reach the TMDB API.
 This is usually due to a network configuration issue or a firewall blocking the connection.
 
+## Too many requests when signing in
+
+Seerr limits how often the sign-in and password reset endpoints can be called from a single IP address, and returns HTTP 429 once a limit is exceeded. The limits and their windows are listed under [Sign-in Rate Limiting](/using-seerr/settings/network#sign-in-rate-limiting).
+
+Waiting for the window to pass clears it. If several people are locked out at once, or you are limited on the first attempt, the likely cause is that all of your visitors share one apparent IP address: check that [**Enable Proxy Support**](/using-seerr/settings/network#enable-proxy-support) matches your reverse proxy setup.
+
 ## Account does not have admin privileges
 
 If your admin account no longer has admin privileges, this is typically because your Jellyfin/Emby user ID has changed on the server side.

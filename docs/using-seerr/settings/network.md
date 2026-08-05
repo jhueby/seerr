@@ -37,6 +37,24 @@ If you have Seerr behind a reverse proxy, enable this setting to allow Seerr to 
 
 This setting is **disabled** by default.
 
+:::info
+This setting controls whether Seerr trusts forwarding headers such as `X-Forwarded-For`.
+
+When it is **disabled**, the client IP is the address Seerr sees the connection coming from. Behind a reverse proxy that is the proxy's own address, so sign-in log entries and the sign-in rate limits will be attributed to the proxy rather than to the visitor.
+
+When it is **enabled**, the client IP is read from the forwarding headers instead. Any client can set those headers itself, so only enable this if your reverse proxy **overwrites** `X-Forwarded-For` rather than appending to a value the client supplied. Otherwise a visitor can choose which IP address appears in your logs, and can evade both the sign-in rate limits and any [Fail2ban](/extending-seerr/fail2ban) jail built on them.
+:::
+
+## Sign-in Rate Limiting
+
+Seerr limits how often the unauthenticated endpoints can be called from a single IP address. This is always on and is not configurable.
+
+- **Sign-in** (password, Plex, Jellyfin/Emby, and Quick Connect): 20 failed attempts per 15 minutes. Successful sign-ins are not counted, so a shared address does not lock itself out through normal use.
+- **Password reset** (both requesting a recovery link and redeeming one): 10 per hour.
+- **Quick Connect initiation**: 30 per 15 minutes.
+
+Exceeding a limit returns HTTP 429 until the window passes. If an entire household or network is being limited at once, check that **Enable Proxy Support** is configured correctly — otherwise every visitor shares the proxy's IP address and therefore a single allowance.
+
 ## Enable CSRF Protection
 
 :::warning

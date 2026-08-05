@@ -7,7 +7,9 @@ sidebar_position: 3
 # Fail2ban
 
 :::warning
-If you are running Seerr behind a reverse proxy, make sure that the **Enable Proxy Support** setting is **enabled**.
+If you are running Seerr behind a reverse proxy, make sure that the [**Enable Proxy Support**](/using-seerr/settings/network#enable-proxy-support) setting is **enabled**, and that your proxy **overwrites** the `X-Forwarded-For` header rather than appending to whatever the client sent.
+
+The IP address in the log line is the one this filter bans. With Proxy Support disabled, every attempt is logged against your proxy's address and the jail will ban the proxy instead of the attacker. With it enabled behind a proxy that forwards a client-supplied header unchanged, a visitor can pick the address that gets banned.
 :::
 
 To use Fail2ban with Seerr, create a new file named `seerr.local` in your Fail2ban `filter.d` directory with the following filter definition:
