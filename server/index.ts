@@ -21,6 +21,7 @@ import checkOverseerrMerge from '@server/lib/overseerrMerge';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import clearCookies from '@server/middleware/clearcookies';
+import securityHeaders from '@server/middleware/securityHeaders';
 import routes from '@server/routes';
 import avatarproxy from '@server/routes/avatarproxy';
 import imageproxy from '@server/routes/imageproxy';
@@ -158,6 +159,7 @@ app
     if (settings.network.trustProxy) {
       server.enable('trust proxy');
     }
+    server.use(securityHeaders);
     server.use(cookieParser());
     server.use(express.json());
     server.use(express.urlencoded({ extended: true }));
