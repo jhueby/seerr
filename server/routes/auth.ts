@@ -10,10 +10,17 @@ import { Permission } from '@server/lib/permissions';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { isAuthenticated } from '@server/middleware/auth';
+import {
+  loginRateLimit,
+  passwordResetRateLimit,
+  quickConnectCheckRateLimit,
+  quickConnectInitiateRateLimit,
+} from '@server/middleware/rateLimit';
 import { checkAvatarChanged } from '@server/routes/avatarproxy';
 import { ApiError } from '@server/types/error';
 import { getAppVersion } from '@server/utils/appVersion';
 import { getHostname } from '@server/utils/getHostname';
+import { destroyUserSessions, setSessionUser } from '@server/utils/session';
 import axios from 'axios';
 import { Router } from 'express';
 import net from 'net';
@@ -55,7 +62,7 @@ authRoutes.get('/me', isAuthenticated(), async (req, res) => {
   return res.status(200).json(user);
 });
 
-authRoutes.post('/plex', async (req, res, next) => {
+authRoutes.post('/plex', loginRateLimit, async (req, res, next) => {
   const settings = getSettings();
   const userRepository = getRepository(User);
   const body = req.body as { authToken?: string };
@@ -210,9 +217,7 @@ authRoutes.post('/plex', async (req, res, next) => {
     }
 
     // Set logged in session
-    if (req.session) {
-      req.session.userId = user.id;
-    }
+    await setSessionUser(req, user.id);
 
     return res.status(200).json(user?.filter() ?? {});
   } catch (e) {
@@ -232,7 +237,7 @@ function getUserAvatarUrl(user: User): string {
   return `/avatarproxy/${user.jellyfinUserId}?v=${user.avatarVersion}`;
 }
 
-authRoutes.post('/jellyfin', async (req, res, next) => {
+authRoutes.post('/jellyfin', loginRateLimit, async (req, res, next) => {
   const settings = getSettings();
   const userRepository = getRepository(User);
   const body = req.body as {
@@ -512,8 +517,8 @@ authRoutes.post('/jellyfin', async (req, res, next) => {
     }
 
     // Set logged in session
-    if (req.session) {
-      req.session.userId = user?.id;
+    if (user) {
+      await setSessionUser(req, user.id);
     }
 
     return res.status(200).json(user?.filter() ?? {});
@@ -602,65 +607,74 @@ authRoutes.post('/jellyfin', async (req, res, next) => {
   }
 });
 
-authRoutes.post('/jellyfin/quickconnect/initiate', async (req, res, next) => {
-  try {
-    const hostname = getHostname();
-    const jellyfinServer = new JellyfinAPI(
-      hostname ?? '',
-      undefined,
-      undefined
-    );
+authRoutes.post(
+  '/jellyfin/quickconnect/initiate',
+  quickConnectInitiateRateLimit,
+  async (req, res, next) => {
+    try {
+      const hostname = getHostname();
+      const jellyfinServer = new JellyfinAPI(
+        hostname ?? '',
+        undefined,
+        undefined
+      );
 
-    const response = await jellyfinServer.initiateQuickConnect();
+      const response = await jellyfinServer.initiateQuickConnect();
 
-    return res.status(200).json({
-      code: response.Code,
-      secret: response.Secret,
-    });
-  } catch (error) {
-    logger.error('Error initiating Jellyfin quick connect', {
-      label: 'Auth',
-      errorMessage: error.message,
-    });
-    return next({
-      status: 500,
-      message: 'Failed to initiate quick connect.',
-    });
+      return res.status(200).json({
+        code: response.Code,
+        secret: response.Secret,
+      });
+    } catch (error) {
+      logger.error('Error initiating Jellyfin quick connect', {
+        label: 'Auth',
+        errorMessage: error.message,
+      });
+      return next({
+        status: 500,
+        message: 'Failed to initiate quick connect.',
+      });
+    }
   }
-});
+);
 
-authRoutes.get('/jellyfin/quickconnect/check', async (req, res, next) => {
-  const result = quickConnectSecret.safeParse(req.query);
-  if (!result.success) {
-    return next({
-      status: 400,
-      message: 'Invalid secret format',
-    });
+authRoutes.get(
+  '/jellyfin/quickconnect/check',
+  quickConnectCheckRateLimit,
+  async (req, res, next) => {
+    const result = quickConnectSecret.safeParse(req.query);
+    if (!result.success) {
+      return next({
+        status: 400,
+        message: 'Invalid secret format',
+      });
+    }
+
+    const { secret } = result.data;
+
+    try {
+      const hostname = getHostname();
+      const jellyfinServer = new JellyfinAPI(
+        hostname ?? '',
+        undefined,
+        undefined
+      );
+
+      const response = await jellyfinServer.checkQuickConnect(secret);
+
+      return res.status(200).json({ authenticated: response.Authenticated });
+    } catch (e) {
+      return next({
+        status: e.statusCode || 500,
+        message: 'Failed to check Quick Connect status',
+      });
+    }
   }
-
-  const { secret } = result.data;
-
-  try {
-    const hostname = getHostname();
-    const jellyfinServer = new JellyfinAPI(
-      hostname ?? '',
-      undefined,
-      undefined
-    );
-
-    const response = await jellyfinServer.checkQuickConnect(secret);
-
-    return res.status(200).json({ authenticated: response.Authenticated });
-  } catch (e) {
-    return next({
-      status: e.statusCode || 500,
-      message: 'Failed to check Quick Connect status',
-    });
-  }
-});
+);
 
 authRoutes.post(
   '/jellyfin/quickconnect/authenticate',
+  loginRateLimit,
   async (req, res, next) => {
     const settings = getSettings();
     const userRepository = getRepository(User);
@@ -754,9 +768,7 @@ authRoutes.post(
       }
 
       // Set session
-      if (req.session) {
-        req.session.userId = user.id;
-      }
+      await setSessionUser(req, user.id);
 
       return res.status(200).json(user?.filter() ?? {});
     } catch (e) {
@@ -773,7 +785,7 @@ authRoutes.post(
   }
 );
 
-authRoutes.post('/local', async (req, res, next) => {
+authRoutes.post('/local', loginRateLimit, async (req, res, next) => {
   const settings = getSettings();
   const userRepository = getRepository(User);
   const body = req.body as { email?: string; password?: string };
@@ -806,9 +818,7 @@ authRoutes.post('/local', async (req, res, next) => {
     }
 
     // Set logged in session
-    if (user && req.session) {
-      req.session.userId = user.id;
-    }
+    await setSessionUser(req, user.id);
 
     return res.status(200).json(user?.filter() ?? {});
   } catch (e) {
@@ -902,98 +912,110 @@ authRoutes.post('/logout', async (req, res, next) => {
   }
 });
 
-authRoutes.post('/reset-password', async (req, res, next) => {
-  const userRepository = getRepository(User);
-  const body = req.body as { email?: string };
+authRoutes.post(
+  '/reset-password',
+  passwordResetRateLimit,
+  async (req, res, next) => {
+    const userRepository = getRepository(User);
+    const body = req.body as { email?: string };
 
-  if (!body.email) {
-    return next({
-      status: 500,
-      message: 'Email address required.',
-    });
+    if (!body.email) {
+      return next({
+        status: 500,
+        message: 'Email address required.',
+      });
+    }
+
+    const user = await userRepository
+      .createQueryBuilder('user')
+      .where('user.email = :email', { email: body.email.toLowerCase() })
+      .getOne();
+
+    if (user) {
+      await user.resetPassword();
+      await userRepository.save(user);
+      logger.info('Successfully sent password reset link', {
+        label: 'API',
+        ip: req.ip,
+        email: body.email,
+      });
+    } else {
+      logger.error('Something went wrong sending password reset link', {
+        label: 'API',
+        ip: req.ip,
+        email: body.email,
+      });
+    }
+
+    return res.status(200).json({ status: 'ok' });
   }
+);
 
-  const user = await userRepository
-    .createQueryBuilder('user')
-    .where('user.email = :email', { email: body.email.toLowerCase() })
-    .getOne();
+authRoutes.post<{ guid: string }>(
+  '/reset-password/:guid',
+  passwordResetRateLimit,
+  async (req, res, next) => {
+    const userRepository = getRepository(User);
 
-  if (user) {
-    await user.resetPassword();
+    if (!req.body.password || req.body.password?.length < 8) {
+      logger.warn('Failed password reset attempt using invalid new password', {
+        label: 'API',
+        ip: req.ip,
+        guid: req.params.guid,
+      });
+      return next({
+        status: 500,
+        message: 'Password must be at least 8 characters long.',
+      });
+    }
+
+    const user = await userRepository.findOne({
+      where: { resetPasswordGuid: req.params.guid },
+    });
+
+    if (!user) {
+      logger.warn('Failed password reset attempt using invalid recovery link', {
+        label: 'API',
+        ip: req.ip,
+        guid: req.params.guid,
+      });
+      return next({
+        status: 500,
+        message: 'Invalid password reset link.',
+      });
+    }
+
+    if (
+      !user.recoveryLinkExpirationDate ||
+      user.recoveryLinkExpirationDate <= new Date()
+    ) {
+      logger.warn('Failed password reset attempt using expired recovery link', {
+        label: 'API',
+        ip: req.ip,
+        guid: req.params.guid,
+        email: user.email,
+      });
+      return next({
+        status: 500,
+        message: 'Invalid password reset link.',
+      });
+    }
+    user.recoveryLinkExpirationDate = null;
+    await user.setPassword(req.body.password);
     await userRepository.save(user);
-    logger.info('Successfully sent password reset link', {
-      label: 'API',
-      ip: req.ip,
-      email: body.email,
-    });
-  } else {
-    logger.error('Something went wrong sending password reset link', {
-      label: 'API',
-      ip: req.ip,
-      email: body.email,
-    });
-  }
 
-  return res.status(200).json({ status: 'ok' });
-});
+    // Whoever held the account before the reset must not stay signed in
+    await destroyUserSessions(user.id);
 
-authRoutes.post('/reset-password/:guid', async (req, res, next) => {
-  const userRepository = getRepository(User);
-
-  if (!req.body.password || req.body.password?.length < 8) {
-    logger.warn('Failed password reset attempt using invalid new password', {
-      label: 'API',
-      ip: req.ip,
-      guid: req.params.guid,
-    });
-    return next({
-      status: 500,
-      message: 'Password must be at least 8 characters long.',
-    });
-  }
-
-  const user = await userRepository.findOne({
-    where: { resetPasswordGuid: req.params.guid },
-  });
-
-  if (!user) {
-    logger.warn('Failed password reset attempt using invalid recovery link', {
-      label: 'API',
-      ip: req.ip,
-      guid: req.params.guid,
-    });
-    return next({
-      status: 500,
-      message: 'Invalid password reset link.',
-    });
-  }
-
-  if (
-    !user.recoveryLinkExpirationDate ||
-    user.recoveryLinkExpirationDate <= new Date()
-  ) {
-    logger.warn('Failed password reset attempt using expired recovery link', {
+    logger.info('Successfully reset password', {
       label: 'API',
       ip: req.ip,
       guid: req.params.guid,
       email: user.email,
     });
-    return next({
-      status: 500,
-      message: 'Invalid password reset link.',
-    });
-  }
-  user.recoveryLinkExpirationDate = null;
-  await user.setPassword(req.body.password);
-  await userRepository.save(user);
-  logger.info('Successfully reset password', {
-    label: 'API',
-    ip: req.ip,
-    guid: req.params.guid,
-    email: user.email,
-  });
 
-  return res.status(200).json({ status: 'ok' });
-});
+    return res.status(200).json({ status: 'ok' });
+  }
+);
 
 export default authRoutes;

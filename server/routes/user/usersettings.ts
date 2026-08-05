@@ -21,6 +21,7 @@ import {
   isOwnProfile,
   isOwnProfileOrAdmin,
 } from '@server/utils/profileMiddleware';
+import { destroyUserSessions } from '@server/utils/session';
 import { Router } from 'express';
 import net from 'net';
 import { Not } from 'typeorm';
@@ -232,6 +233,11 @@ userSettingsRoutes.post<
     ) {
       await user.setPassword(req.body.newPassword);
       await userRepository.save(user);
+
+      // An admin resetting someone else's password must not leave that user
+      // signed in wherever they already are
+      await destroyUserSessions(user.id);
+
       logger.debug('Password overriden by user.', {
         label: 'User Settings',
         userEmail: user.email,
@@ -255,6 +261,10 @@ userSettingsRoutes.post<
 
     await user.setPassword(req.body.newPassword);
     await userRepository.save(user);
+
+    // Sign out any other browser holding a session for this account, but keep
+    // the one that just changed the password
+    await destroyUserSessions(user.id, req.sessionID);
 
     return res.status(204).send();
   } catch (e) {

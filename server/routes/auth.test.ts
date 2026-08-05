@@ -10,6 +10,7 @@ import { User } from '@server/entity/User';
 import PreparedEmail from '@server/lib/email';
 import { getSettings } from '@server/lib/settings';
 import { checkUser } from '@server/middleware/auth';
+import { resetRateLimiters } from '@server/middleware/rateLimit';
 import { setupTestDb } from '@server/test/db';
 import { ApiError } from '@server/types/error';
 import type { Express } from 'express';
@@ -102,6 +103,12 @@ function createApp() {
 
 before(async () => {
   app = createApp();
+});
+
+// The app (and with it the rate limiter counters) is shared by every test, so
+// the counters are cleared between tests to keep them independent.
+beforeEach(async () => {
+  await resetRateLimiters();
 });
 
 setupTestDb();
@@ -623,6 +630,67 @@ describe('POST /auth/local', () => {
 
     assert.strictEqual(res.status, 200);
     assert.ok('id' in res.body);
+  });
+
+  it('rate limits repeated failed sign-in attempts', async () => {
+    let lastStatus = 0;
+
+    // The limiter allows 20 failures per window; go past it.
+    for (let attempt = 0; attempt < 21; attempt++) {
+      const res = await request(app)
+        .post('/auth/local')
+        .send({ email: 'admin@seerr.dev', password: 'wrongpassword' });
+      lastStatus = res.status;
+    }
+
+    assert.strictEqual(lastStatus, 429);
+
+    // A correct password is refused too, so the lockout cannot be sidestepped.
+    const blockedRes = await request(app)
+      .post('/auth/local')
+      .send({ email: 'admin@seerr.dev', password: 'test1234' });
+
+    assert.strictEqual(blockedRes.status, 429);
+  });
+
+  it('does not count successful sign-ins towards the rate limit', async () => {
+    for (let attempt = 0; attempt < 25; attempt++) {
+      const res = await request(app)
+        .post('/auth/local')
+        .send({ email: 'admin@seerr.dev', password: 'test1234' });
+
+      assert.strictEqual(res.status, 200);
+    }
+  });
+
+  it('issues a new session ID on sign-in to prevent session fixation', async () => {
+    const agent = request.agent(app);
+
+    // Establish an anonymous session first, the way an attacker-planted cookie
+    // would have.
+    await agent.get('/auth/me');
+    const preLoginCookie = agent.jar.getCookie('connect.sid', {
+      domain: '127.0.0.1',
+      path: '/',
+      script: false,
+      secure: false,
+    } as never);
+
+    const res = await agent
+      .post('/auth/local')
+      .send({ email: 'admin@seerr.dev', password: 'test1234' });
+
+    assert.strictEqual(res.status, 200);
+
+    const postLoginCookie = agent.jar.getCookie('connect.sid', {
+      domain: '127.0.0.1',
+      path: '/',
+      script: false,
+      secure: false,
+    } as never);
+
+    assert.ok(postLoginCookie, 'expected a session cookie after signing in');
+    assert.notStrictEqual(postLoginCookie?.value, preLoginCookie?.value);
   });
 
   it('allows the non-admin user to log in', async () => {
